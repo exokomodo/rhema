@@ -34,7 +34,27 @@ Note the session ID returned (e.g., `calm-willow`). Store it:
 ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <session-id> <pid>
 ```
 
-**If alive:** Use `process(action=poll)` with the stored session ID to reattach.
+**If alive:** Reattach using the stored session ID:
+
+```bash
+session_id=$(~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh session-id)
+```
+
+Then use `process(action=write, sessionId=<session_id>)` as normal.
+
+**If alive but session ID is missing or stale:** Scan running sessions:
+
+```
+process(action=list)
+```
+
+Look for a session running `sbcl`. Use that session ID and re-store it:
+
+```bash
+~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <found-id> <pid>
+```
+
+**If truly dead:** Start a fresh SBCL session (see above).
 
 ## Step 2 — Evaluate an Expression
 
