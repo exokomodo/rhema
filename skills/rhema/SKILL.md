@@ -1,3 +1,8 @@
+---
+name: rhema
+description: "Persistent Common Lisp REPL shared across all agent sessions via Unix socket. Use this skill whenever you need to evaluate, run, or execute any Common Lisp (CL) code. Do NOT start a standalone sbcl process — always route through the Rhema socket at /tmp/rhema.sock."
+---
+
 # Rhema Skill — Persistent Common Lisp REPL
 
 ## ⚠️ The Socket is Shared State
