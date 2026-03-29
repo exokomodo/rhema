@@ -49,4 +49,5 @@ Early development. Repo bootstrap in progress.
 
 - [James](https://github.com/jamesaorson)
 - [diatrix (Nathan)](https://github.com/diatrix)
+- [SonicCyclops](https://github.com/soniccyclops)
 - [ExoKomodo](https://github.com/exokomodo-bot)
