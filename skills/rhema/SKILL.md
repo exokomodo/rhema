@@ -65,12 +65,19 @@ extraction. Send this via `process(action=write, sessionId=<id>)`:
 (progn
   (format t "~%===RHEMA-BEGIN===~%")
   (handler-case
-    (let ((result (progn YOUR-EXPRESSION-HERE)))
+    (let ((result (progn
+                    (handler-bind ((warning #'muffle-warning))
+                      YOUR-EXPRESSION-HERE))))
       (format t "~A" result))
-    (condition (c)
+    (error (c)
       (format t "ERROR: ~A" c)))
   (format t "~%===RHEMA-END===~%"))
 ```
+
+**Important:** Use `(error ...)` not `(condition ...)` in `handler-case`. `condition`
+catches warnings too — SBCL's redefine warnings will abort the eval before your
+expression lands. `handler-bind` muffles warnings explicitly so they don't
+interfere.
 
 Then poll for results:
 
@@ -86,7 +93,7 @@ capture it separately if relevant.
 
 Write:
 ```lisp
-(progn (format t "~%===RHEMA-BEGIN===~%") (handler-case (let ((result (progn (+ 1 2)))) (format t "~A" result)) (condition (c) (format t "ERROR: ~A" c))) (format t "~%===RHEMA-END===~%"))
+(progn (format t "~%===RHEMA-BEGIN===~%") (handler-case (let ((result (progn (handler-bind ((warning #'muffle-warning)) (+ 1 2))))) (format t "~A" result)) (error (c) (format t "ERROR: ~A" c))) (format t "~%===RHEMA-END===~%"))
 ```
 
 Poll result:
