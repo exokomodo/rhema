@@ -1,5 +1,22 @@
 # Rhema Skill — Persistent Common Lisp REPL
 
+## ‼️ Rule #1: Never Start a New SBCL Process for Lisp Evaluation
+
+**Any time you need to run Common Lisp code, use the Rhema socket first.**
+
+```bash
+# Check if socket exists
+ls /tmp/rhema.sock 2>/dev/null && echo "UP" || echo "DOWN"
+```
+
+- **Socket UP** → use it. Do not start a new SBCL. Do not use `sbcl --eval`.
+- **Socket DOWN** → start one SBCL session with `init.lisp` (see below), then use the socket.
+
+There is exactly one Rhema REPL on this machine. All agents and all channels share it.
+Starting a separate SBCL process for ad-hoc evaluation defeats the purpose of Rhema.
+
+---
+
 ## ⚠️ The Socket is Shared State
 
 `/tmp/rhema.sock` is a **single shared REPL** running on this machine. Every
