@@ -34,7 +34,27 @@ Note the session ID returned (e.g., `calm-willow`). Store it:
 ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <session-id> <pid>
 ```
 
-**If alive:** Use `process(action=poll)` with the stored session ID to reattach.
+**If alive:** Reattach using the stored session ID:
+
+```bash
+session_id=$(~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh session-id)
+```
+
+Then use `process(action=write, sessionId=<session_id>)` as normal.
+
+**If alive but session ID is missing or stale:** Scan running sessions:
+
+```
+process(action=list)
+```
+
+Look for a session running `sbcl`. Use that session ID and re-store it:
+
+```bash
+~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <found-id> <pid>
+```
+
+**If truly dead:** Start a fresh SBCL session (see above).
 
 ## Step 2 — Evaluate an Expression
 
@@ -45,12 +65,19 @@ extraction. Send this via `process(action=write, sessionId=<id>)`:
 (progn
   (format t "~%===RHEMA-BEGIN===~%")
   (handler-case
-    (let ((result (progn YOUR-EXPRESSION-HERE)))
+    (let ((result (progn
+                    (handler-bind ((warning #'muffle-warning))
+                      YOUR-EXPRESSION-HERE))))
       (format t "~A" result))
-    (condition (c)
+    (error (c)
       (format t "ERROR: ~A" c)))
   (format t "~%===RHEMA-END===~%"))
 ```
+
+**Important:** Use `(error ...)` not `(condition ...)` in `handler-case`. `condition`
+catches warnings too — SBCL's redefine warnings will abort the eval before your
+expression lands. `handler-bind` muffles warnings explicitly so they don't
+interfere.
 
 Then poll for results:
 
@@ -66,7 +93,7 @@ capture it separately if relevant.
 
 Write:
 ```lisp
-(progn (format t "~%===RHEMA-BEGIN===~%") (handler-case (let ((result (progn (+ 1 2)))) (format t "~A" result)) (condition (c) (format t "ERROR: ~A" c))) (format t "~%===RHEMA-END===~%"))
+(progn (format t "~%===RHEMA-BEGIN===~%") (handler-case (let ((result (progn (handler-bind ((warning #'muffle-warning)) (+ 1 2))))) (format t "~A" result)) (error (c) (format t "ERROR: ~A" c))) (format t "~%===RHEMA-END===~%"))
 ```
 
 Poll result:
