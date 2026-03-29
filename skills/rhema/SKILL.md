@@ -1,5 +1,20 @@
 # Rhema Skill — Persistent Common Lisp REPL
 
+## Connection Methods
+
+Two ways to reach the REPL:
+
+1. **PTY session** (this session's SBCL process) — use when you started SBCL yourself
+2. **Unix socket** `/tmp/rhema.sock` — use to reach a REPL started by any session
+
+**Prefer the socket.** Any agent, any channel, any process on this machine can connect to the same persistent REPL via:
+
+```bash
+echo '(your-expression)' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+Result comes back with delimiters already applied — no wrapping needed when using the socket.
+
 You have access to a persistent SBCL (Common Lisp) REPL that survives across
 turns. Use it to evaluate expressions, define functions, and build a personal
 tool library that auto-loads on startup.
