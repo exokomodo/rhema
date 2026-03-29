@@ -1,41 +1,48 @@
 # Rhema Skill — Persistent Common Lisp REPL
 
-## Connection Methods
+## ⚠️ The Socket is Shared State
 
-Two ways to reach the REPL:
+`/tmp/rhema.sock` is a **single shared REPL** running on this machine. Every
+agent, every Discord channel, every session connects to the same SBCL process
+and the same Lisp image. This is intentional.
 
-1. **PTY session** (this session's SBCL process) — use when you started SBCL yourself
-2. **Unix socket** `/tmp/rhema.sock` — use to reach a REPL started by any session
+**What this means:**
+- A function defined in one channel is available in all other channels
+- State accumulates across all sessions — nobody has a private REPL
+- If another agent or channel redefined something you defined, your definition is gone
+- Library files (`~/rhema/library/`) are the durable layer — in-memory state is shared and volatile
 
-**Prefer the socket.** Any agent, any channel, any process on this machine can connect to the same persistent REPL via:
+**Always use the socket** unless you have a specific reason to use a private PTY session.
 
-```bash
-echo '(your-expression)' | socat - UNIX-CONNECT:/tmp/rhema.sock
-```
+---
 
-Result comes back with delimiters already applied — no wrapping needed when using the socket.
+## Quick Start
 
-You have access to a persistent SBCL (Common Lisp) REPL that survives across
-turns. Use it to evaluate expressions, define functions, and build a personal
-tool library that auto-loads on startup.
-
-## Prerequisites
-
-- `sbcl` installed at `/usr/local/bin/sbcl` (2.6.2+)
-- `~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh` (management script)
-- Quicklisp: bootstrap if `~/quicklisp/setup.lisp` doesn't exist
-
-## Step 1 — Check or Start the REPL
-
-Run the status check first:
+Check if the socket is up:
 
 ```bash
-~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh status
+ls /tmp/rhema.sock 2>/dev/null && echo "UP" || echo "DOWN"
 ```
 
-Output is `status=alive session=<id>` or `status=dead session=`.
+Eval any expression:
 
-**If dead:** Start SBCL as a background PTY session:
+```bash
+echo '(+ 1 2)' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+Result comes back pre-delimited — no wrapping needed:
+
+```
+===RHEMA-BEGIN===
+3
+===RHEMA-END===
+```
+
+---
+
+## Starting the REPL (if socket is down)
+
+Start SBCL with the socket server as a background PTY session:
 
 ```
 exec: sbcl --noinform --disable-debugger --load /home/butler/rhema/init.lisp
@@ -43,38 +50,63 @@ pty: true
 background: true
 ```
 
-Note the session ID returned (e.g., `calm-willow`). Store it:
+Store the session ID for health checks:
 
 ```bash
 ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <session-id> <pid>
 ```
 
-**If alive:** Reattach using the stored session ID:
+The socket server auto-starts from `init.lisp`. Once up, all agents use the
+socket — not the PTY session directly.
+
+---
+
+## Checking / Reattaching the PTY Session
+
+```bash
+~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh status
+# => status=alive session=<id>
+# => status=dead session=
+```
+
+If alive, get the session ID:
 
 ```bash
 session_id=$(~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh session-id)
 ```
 
-Then use `process(action=write, sessionId=<session_id>)` as normal.
-
-**If alive but session ID is missing or stale:** Scan running sessions:
+If session ID is stale, scan running sessions:
 
 ```
 process(action=list)
 ```
 
-Look for a session running `sbcl`. Use that session ID and re-store it:
+Find the entry running `sbcl`, re-store it:
 
 ```bash
 ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh store-session <found-id> <pid>
 ```
 
-**If truly dead:** Start a fresh SBCL session (see above).
+---
 
-## Step 2 — Evaluate an Expression
+## Evaluating via Socket (preferred)
 
-Every expression must be wrapped in the delimiter envelope for reliable
-extraction. Send this via `process(action=write, sessionId=<id>)`:
+```bash
+echo '(your-expression)' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+Extract text between `===RHEMA-BEGIN===` and `===RHEMA-END===`. Done.
+
+**No wrapping needed** — the socket server applies delimiters and error handling
+server-side.
+
+---
+
+## Evaluating via PTY (fallback / private)
+
+Use only if the socket is down or you need a private REPL isolated from shared state.
+
+Wrap the expression and send via PTY:
 
 ```lisp
 (progn
@@ -89,140 +121,117 @@ extraction. Send this via `process(action=write, sessionId=<id>)`:
   (format t "~%===RHEMA-END===~%"))
 ```
 
-**Important:** Use `(error ...)` not `(condition ...)` in `handler-case`. `condition`
-catches warnings too — SBCL's redefine warnings will abort the eval before your
-expression lands. `handler-bind` muffles warnings explicitly so they don't
-interfere.
+**Use `(error ...)` not `(condition ...)`** — `condition` catches warnings,
+which causes SBCL redefine warnings to abort eval before the new definition
+lands. Muffle warnings explicitly with `handler-bind`.
 
-Then poll for results:
+Poll for results:
 
 ```
 process(action=poll, sessionId=<id>, timeout=15000)
 ```
 
-Extract text between `===RHEMA-BEGIN===` and `===RHEMA-END===`. That's your
-result. Text printed *before* `===RHEMA-BEGIN===` is side-effect output —
-capture it separately if relevant.
+---
 
-**Example — evaluate `(+ 1 2)`:**
+## Defining and Saving Functions
 
-Write:
-```lisp
-(progn (format t "~%===RHEMA-BEGIN===~%") (handler-case (let ((result (progn (handler-bind ((warning #'muffle-warning)) (+ 1 2))))) (format t "~A" result)) (error (c) (format t "ERROR: ~A" c))) (format t "~%===RHEMA-END===~%"))
-```
-
-Poll result:
-```
-===RHEMA-BEGIN===
-3
-===RHEMA-END===
-```
-
-## Step 3 — Define and Save Functions
-
-**Define a function** (evaluates in the live REPL):
-
-```lisp
-(defun greet (name)
-  (format nil "Hello, ~A!" name))
-```
-
-**Test it:**
-
-```lisp
-(greet "World")
-```
-
-**Save to library** (persists across restarts):
+**Define in the shared REPL:**
 
 ```bash
-# Write the function to a library file
+echo '(defun greet (name) (format nil "Hello, ~A!" name))' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+**Verify:**
+
+```bash
+echo '(greet "World")' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+**Save to library** (survives SBCL restarts, auto-loads on init):
+
+```bash
 cat > /home/butler/rhema/library/utils.lisp << 'EOF'
 (defun greet (name)
   (format nil "Hello, ~A!" name))
 EOF
 
-# Regenerate init.lisp to include the new file
+# Regenerate init.lisp
 ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh generate-init
-# Load it into the running REPL immediately
-process(write): (load "/home/butler/rhema/library/utils.lisp")
+
+# Load immediately into running REPL
+echo '(load "/home/butler/rhema/library/utils.lisp")' | socat - UNIX-CONNECT:/tmp/rhema.sock
 ```
 
-## Step 4 — Bootstrap Quicklisp (first time only)
+---
 
-Check:
-```bash
-ls ~/quicklisp/setup.lisp 2>/dev/null || echo "not installed"
-```
-
-If not installed:
-```lisp
-(let ((ql-setup (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (unless (probe-file ql-setup)
-    (let ((url "https://beta.quicklisp.org/quicklisp.lisp"))
-      (sb-ext:run-program "/usr/bin/curl"
-        (list "-o" "/tmp/quicklisp.lisp" url)
-        :output *standard-output*)
-      (load "/tmp/quicklisp.lisp")
-      (funcall (find-symbol "INSTALL" "QUICKLISP-QUICKSTART")
-               :path (merge-pathnames "quicklisp/" (user-homedir-pathname))))))
-```
-
-Then add to `init.lisp` manually:
-```lisp
-(load "~/quicklisp/setup.lisp")
-```
-
-## Reference — Library Directory
+## Library Directory
 
 ```
 ~/rhema/
-├── init.lisp            ← auto-generated, loads everything in library/
+├── init.lisp              ← auto-generated; loads library/ + starts socket server
 └── library/
-    ├── core.lisp        ← general utilities
-    ├── http.lisp        ← HTTP helpers (dexador etc)
+    ├── server.lisp        ← socket server (do not remove)
+    ├── core.lisp          ← general utilities
+    ├── http.lisp          ← HTTP helpers
     └── ...
 ```
 
 List saved files:
+
 ```bash
 ls -la /home/butler/rhema/library/
 ```
 
-## Reference — Error Patterns
+---
 
-| Output | Meaning | Action |
-|--------|---------|--------|
-| `ERROR: <condition>` | Handled error | Read error, fix expression |
-| `===RHEMA-END===` missing after timeout | Infinite loop or hang | `process(action=kill)`, restart SBCL |
-| `Debugger invoked` | `--disable-debugger` bypassed | Kill session, restart |
-| `No session` error | Session ID stale | Run status check, restart if dead |
+## Bootstrapping Quicklisp (first time only)
 
-## Reference — Timeout Guard
-
-Wrap long-running or potentially infinite expressions:
-
-```lisp
-(sb-ext:with-timeout 10
-  (your-expression))
+```bash
+ls ~/quicklisp/setup.lisp 2>/dev/null || echo "not installed"
 ```
 
-This signals `sb-ext:timeout` after 10 seconds, which `handler-case` catches
-and returns as `ERROR: Timeout`.
-
-## Reference — Quicklisp Usage
+If not installed, eval in the REPL:
 
 ```lisp
-; Load a library (downloads if needed)
-(ql:quickload :dexador)
+(progn
+  (sb-ext:run-program "/usr/bin/curl"
+    (list "-o" "/tmp/quicklisp.lisp" "https://beta.quicklisp.org/quicklisp.lisp")
+    :output *standard-output*)
+  (load "/tmp/quicklisp.lisp")
+  (funcall (find-symbol "INSTALL" "QUICKLISP-QUICKSTART")
+           :path (merge-pathnames "quicklisp/" (user-homedir-pathname))))
+```
 
-; List available systems
-(ql:system-apropos "json")
+Then prepend to `~/rhema/init.lisp`:
+
+```lisp
+(load "~/quicklisp/setup.lisp")
 ```
 
 Common packages:
 - `:dexador` — HTTP client
 - `:jonathan` or `:cl-json` — JSON
 - `:cl-ppcre` — regex
-- `:uiop` — filesystem, processes (included with ASDF, no load needed)
+- `:uiop` — filesystem, processes (included with ASDF)
 - `:local-time` — date/time
+
+---
+
+## Error Reference
+
+| Output | Meaning | Action |
+|--------|---------|--------|
+| `ERROR: <text>` | Handled Lisp error | Read and fix |
+| No `===RHEMA-END===` after timeout | Infinite loop or hang | Kill PTY session, restart SBCL |
+| Socket connection refused | REPL is down | Start SBCL (see above) |
+| Function undefined | Defined in another session but not saved to library | Redefine or `load` the library file |
+
+## Timeout Guard
+
+```lisp
+(sb-ext:with-timeout 10
+  (your-expression))
+```
+
+Signals `sb-ext:timeout` after 10 seconds — caught by the server's error handler
+and returned as `ERROR: Timeout`.
