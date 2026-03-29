@@ -29,23 +29,69 @@
       (error (c)
         (format nil "ERROR: ~A" c)))))
 
+(defun expression-complete-p (string)
+  "Return T if STRING contains a complete readable s-expression.
+   Uses READ-FROM-STRING to test — if it succeeds without END-OF-FILE,
+   the expression is complete."
+  (handler-case
+      (progn (read-from-string string) t)
+    (end-of-file () nil)
+    (error () t)))  ; other errors (e.g. syntax) mean we should try eval to surface them
+
 (defun handle-client (socket)
-  "Read lines from client, eval each, write delimited result back."
+  "Read lines from client, accumulate into complete expressions, eval, and
+   write delimited results back. Supports multiline s-expressions."
   (let ((stream (socket-make-stream socket
                                     :input t
                                     :output t
                                     :buffering :line
-                                    :element-type 'character)))
+                                    :element-type 'character))
+        (buffer ""))
     (handler-case
       (loop
         (let ((line (read-line stream nil nil)))
-          (unless line (return))
-          (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
-            (unless (string= trimmed "")
-              (let ((result (safe-eval trimmed)))
-                (format stream "~%===RHEMA-BEGIN===~%~A~%===RHEMA-END===~%"
-                        result)
-                (force-output stream))))))
+          (unless line
+            ;; Connection closed — eval any remaining buffer
+            (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) buffer)))
+              (unless (string= trimmed "")
+                (let ((result (safe-eval trimmed)))
+                  (format stream "~%===RHEMA-BEGIN===~%~A~%===RHEMA-END===~%"
+                          result)
+                  (force-output stream))))
+            (return))
+          ;; Accumulate line into buffer
+          (setf buffer
+                (if (string= buffer "")
+                    line
+                    (concatenate 'string buffer (string #\Newline) line)))
+          ;; Try to eval complete expressions from the buffer
+          (loop
+            (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) buffer)))
+              (when (string= trimmed "")
+                (setf buffer "")
+                (return))
+              (if (expression-complete-p trimmed)
+                  ;; Complete expression — eval it
+                  (handler-case
+                      (multiple-value-bind (form pos)
+                          (read-from-string trimmed)
+                        (declare (ignore form))
+                        (let* ((expr (subseq trimmed 0 pos))
+                               (rest (string-trim '(#\Space #\Tab #\Return #\Newline)
+                                                  (subseq trimmed pos)))
+                               (result (safe-eval expr)))
+                          (format stream "~%===RHEMA-BEGIN===~%~A~%===RHEMA-END===~%"
+                                  result)
+                          (force-output stream)
+                          (setf buffer rest)))
+                    (error (c)
+                      (format stream "~%===RHEMA-BEGIN===~%ERROR: ~A~%===RHEMA-END===~%"
+                              c)
+                      (force-output stream)
+                      (setf buffer "")
+                      (return)))
+                  ;; Incomplete — wait for more lines
+                  (return))))))
       (error () nil))
     (handler-case (close stream) (error () nil))
     (handler-case (socket-close socket) (error () nil))))
