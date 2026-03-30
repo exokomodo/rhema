@@ -168,77 +168,122 @@ Agent: I need to fetch JSON from an API and extract a field.
 
 ---
 
-## Phase 2 — Generation Interception (OpenClaw Plugin)
+## Phase 2 — MCP Server
 
-**Goal:** Mid-generation `<lisp>` tag interception — the full paper vision.
+**Goal:** Expose the Rhema REPL as a first-class tool in any MCP-compatible
+host — the LLM calls `rhema_eval` during its reasoning loop, not as an
+afterthought.
 
-**Requires:** New plugin API surface in OpenClaw core.
+**Requires:** A small MCP stdio server. No changes to OpenClaw core or opencode.
 
-### Concept
+### Why MCP over stream interception
 
-Instead of the agent deciding to "call a tool" (eval Lisp), the model embeds
-Lisp expressions *inline during generation*:
+The original Phase 2 design proposed mid-generation `<lisp>` tag interception —
+a plugin that buffers and rewrites the LLM's token stream. This was discarded
+for the following reasons:
 
-```
-The current server status is <lisp>(fetch-json "https://...")</lisp> which
-indicates everything is operational.
-```
+- Requires invasive plugin hooks into each host's streaming pipeline
+- Each host (OpenClaw, opencode, Claude Desktop, Cursor) needs separate work
+- High latency risk mid-stream; complex error handling
+- Models aren't trained to emit `<lisp>` tags; effectiveness is unreliable
 
-A middleware layer intercepts `<lisp>` tags during token streaming, evaluates
-them in the persistent REPL, and injects the results back into the generation
-stream. The model never "pauses to use a tool" — computation is woven into
-natural language output.
+An MCP server achieves the same goal — Lisp in the reasoning loop — via the
+standard tool-use protocol that every major LLM host already supports.
 
 ### Architecture
 
 ```
-┌─────────────┐     ┌──────────────────┐     ┌──────────────┐
-│  LLM API    │────▶│  Rhema Plugin    │────▶│  Agent /     │
-│  (streaming)│     │  (intercepts     │     │  User        │
-│             │◀────│   <lisp> tags,   │◀────│              │
-│             │     │   evals in REPL) │     │              │
-└─────────────┘     └────────┬─────────┘     └──────────────┘
-                             │
-                      ┌──────▼───────┐
-                      │  Persistent  │
-                      │  SBCL REPL   │
-                      └──────────────┘
+┌──────────────────────────────────────┐
+│         LLM Host (any)               │
+│  (OpenClaw / opencode / Cursor / ...) │
+│                                      │
+│  ┌──────────────┐                    │
+│  │  Agent LLM   │                    │
+│  │              │──── rhema_eval ───▶│──┐
+│  │              │◀─── result ────────│  │
+│  └──────────────┘                    │  │
+└──────────────────────────────────────┘  │
+                                          │
+                           ┌──────────────▼──────────┐
+                           │   Rhema MCP Server       │
+                           │   (stdio, local process)  │
+                           └──────────────┬───────────┘
+                                          │ socat
+                                          │
+                           ┌──────────────▼───────────┐
+                           │  /tmp/rhema.sock           │
+                           │  (persistent SBCL REPL)    │
+                           └───────────────────────────┘
 ```
 
-### Requirements from OpenClaw Core
+### Tool surface
 
-1. **Stream interception hook** — plugin can inspect and modify tokens as they
-   stream from the LLM provider before reaching the agent/user.
-2. **Buffering** — tokens must be bufferable so partial `<lisp>` tags can be
-   accumulated before deciding whether to intercept.
-3. **Injection** — evaluated results must be injectable back into the stream
-   (replacing the `<lisp>...</lisp>` block) seamlessly.
-4. **Error handling** — REPL errors must be injected as visible error text, not
-   silently swallowed. The model should see its mistakes.
+Single tool: `rhema_eval`
 
-### Challenges
+```json
+{
+  "name": "rhema_eval",
+  "description": "Evaluate a Common Lisp expression in the persistent Rhema REPL. State is shared across all sessions on this machine. Returns the result as a string.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "expression": {
+        "type": "string",
+        "description": "Common Lisp expression to evaluate"
+      }
+    },
+    "required": ["expression"]
+  }
+}
+```
 
-- **Latency:** REPL evaluation adds latency mid-stream. Fast expressions
-  (lookups, arithmetic) are fine. Slow expressions (HTTP calls) may cause
-  noticeable pauses. May need async evaluation with placeholder tokens.
-- **Nesting:** Can a `<lisp>` result contain further `<lisp>` tags? Probably
-  not in Phase 2 — single-pass evaluation only.
-- **Model training:** Models aren't trained to emit `<lisp>` tags. This relies
-  on system prompt instruction. Effectiveness will vary by model. May need
-  fine-tuning or few-shot examples in the system prompt.
-- **Token counting:** Injected results affect context window accounting. The
-  plugin must update token counts accurately.
+The server implementation delegates to the Unix socket:
+`echo '(expr)' | socat - UNIX-CONNECT:/tmp/rhema.sock`
 
-### Phase 2 vs Phase 1
+If the socket is down, the server starts SBCL with `init.lisp` automatically,
+then retries.
 
-Phase 1's eval-and-incorporate loop is explicit: the agent decides to evaluate
-Lisp, reads the result, and incorporates it into its next response. This is
-**already powerful** — it's how humans use REPLs.
+### Host configuration
 
-Phase 2's generation interception is implicit: computation happens *during*
-thought, not between thoughts. This is more elegant but significantly more
-complex. The open question is whether the marginal benefit justifies the
-engineering cost and the new plugin API surface in OpenClaw.
+Both OpenClaw and opencode use the same config format:
+
+```json
+{
+  "mcp": {
+    "rhema": {
+      "type": "local",
+      "command": ["/path/to/rhema-mcp-server"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Any other MCP-compatible host (Claude Desktop, Cursor, etc.) works identically.
+
+### Implementation plan
+
+1. `mcp/server.ts` — MCP stdio server (Node/TypeScript, minimal dependencies)
+2. Expose `rhema_eval` — delegates to socket, handles socket-down restart
+3. `make build/mcp` — builds/bundles the server binary
+4. `make install/mcp` — installs to `~/.local/bin/rhema-mcp-server`
+5. Document config snippets for OpenClaw and opencode in SKILL.md and README
+
+### Why TypeScript for the MCP server?
+
+The MCP SDK has the best TypeScript support (`@modelcontextprotocol/sdk`).
+The server itself is trivial — connect to socket, forward expression, return
+result. Runtime size is not a concern for a local stdio process.
+
+### Original stream interception design (archived)
+
+The original Phase 2 design (mid-generation `<lisp>` tag interception) is
+preserved in `docs/archive/phase2-stream-interception.md` for reference.
+It remains theoretically interesting — computation woven directly into
+generation rather than between turns — but the MCP approach delivers the
+practical benefit without the engineering cost.
+
+Issues #8, #9, #10 are deprioritized in favor of #22 (this work).
 
 ---
 
@@ -332,19 +377,14 @@ directions), but the default is agent autonomy.
 
 ## Open Questions
 
-### 1. Is Phase 2 worth the complexity?
+### 1. MCP server language choice
 
-The eval-and-incorporate loop (Phase 1) already gives the agent full access to
-persistent Lisp computation. Phase 2's generation interception is more elegant
-but requires:
+TypeScript (`@modelcontextprotocol/sdk`) has the best MCP support and the
+server logic is trivial. Go is also viable if we want a single static binary
+with no Node runtime dependency.
 
-- New OpenClaw plugin API surface
-- Stream buffering and injection infrastructure
-- Careful latency management
-- Model-specific prompt engineering for `<lisp>` tag emission
-
-**Question for the team:** Is the seamlessness of mid-generation evaluation
-worth the engineering cost? Or is explicit eval good enough?
+**Current decision:** TypeScript. Can be revisited if distribution complexity
+is a concern.
 
 ### 2. State serialization between sessions
 
@@ -394,6 +434,6 @@ A runaway `(loop)` or memory-hungry computation could consume the host. Options:
 - [ ] **M3:** Library save/load with auto-initialization
 - [ ] **M4:** OpenClaw skill packaging (SKILL.md + scripts)
 - [ ] **M5:** Agent self-test (agent builds and uses its own tools end-to-end)
-- [ ] **M6:** Phase 2 design RFC (if pursued)
+- [ ] **M6:** MCP server (`rhema_eval` tool, opencode + OpenClaw integration)
 - [ ] **M7:** Multi-dialect support (Babashka, Guile)
 - [ ] **M8:** ClawHub packaging and distribution
