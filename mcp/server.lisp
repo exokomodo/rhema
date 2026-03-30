@@ -1,210 +1,51 @@
 ;;;; mcp/server.lisp — Rhema MCP server (stdio transport)
 ;;;; JSON-RPC 2.0 over stdin/stdout, delegates to /tmp/rhema.sock
 ;;;; Run: sbcl --script mcp/server.lisp
-;;;; Zero external dependencies — SBCL built-ins only.
+;;;; Requires Quicklisp + jonathan for JSON.
 
 (require :sb-bsd-sockets)
 
+;;; Load Quicklisp and jonathan (suppress stdout to keep MCP transport clean)
+(let ((*standard-output* *error-output*))
+  (load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))
+  (ql:quickload :jonathan :silent t))
+
 ;;; ============================================================
-;;; Minimal JSON parser (handles MCP envelopes only)
+;;; JSON helpers (jonathan library)
 ;;; ============================================================
-
-(defun skip-ws (str pos)
-  "Skip whitespace in STR starting at POS."
-  (loop while (and (< pos (length str))
-                   (member (char str pos) '(#\Space #\Tab #\Newline #\Return)))
-        do (incf pos))
-  pos)
-
-(defun parse-json-string (str pos)
-  "Parse a JSON string starting at POS (after opening quote). Returns (values string new-pos)."
-  (assert (char= (char str pos) #\"))
-  (incf pos) ; skip opening "
-  (let ((out (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
-    (loop
-      (when (>= pos (length str))
-        (error "Unterminated JSON string"))
-      (let ((ch (char str pos)))
-        (cond
-          ((char= ch #\")
-           (return (values (coerce out 'simple-string) (1+ pos))))
-          ((char= ch #\\)
-           (incf pos)
-           (when (>= pos (length str))
-             (error "Unterminated JSON escape"))
-           (let ((esc (char str pos)))
-             (vector-push-extend
-              (case esc
-                (#\" #\")
-                (#\\ #\\)
-                (#\/ #\/)
-                (#\n #\Newline)
-                (#\r #\Return)
-                (#\t #\Tab)
-                (#\b #\Backspace)
-                (#\f (code-char 12))
-                (#\u
-                 ;; Parse 4-hex-digit unicode escape
-                 (let ((hex (subseq str (1+ pos) (+ pos 5))))
-                   (setf pos (+ pos 4))
-                   (code-char (parse-integer hex :radix 16))))
-                (t esc))
-              out)
-             (incf pos)))
-          (t
-           (vector-push-extend ch out)
-           (incf pos)))))))
-
-(defun parse-json-number (str pos)
-  "Parse a JSON number. Returns (values number new-pos)."
-  (let ((start pos)
-        (has-dot nil))
-    (when (and (< pos (length str)) (char= (char str pos) #\-))
-      (incf pos))
-    (loop while (and (< pos (length str))
-                     (or (digit-char-p (char str pos))
-                         (and (char= (char str pos) #\.) (not has-dot))))
-          do (when (char= (char str pos) #\.)
-               (setf has-dot t))
-             (incf pos))
-    ;; Handle exponent
-    (when (and (< pos (length str))
-               (member (char str pos) '(#\e #\E)))
-      (incf pos)
-      (when (and (< pos (length str))
-                 (member (char str pos) '(#\+ #\-)))
-        (incf pos))
-      (loop while (and (< pos (length str))
-                       (digit-char-p (char str pos)))
-            do (incf pos)))
-    (let ((num-str (subseq str start pos)))
-      (if has-dot
-          (values (read-from-string num-str) pos)
-          (values (parse-integer num-str) pos)))))
-
-(defun parse-json-value (str pos)
-  "Parse a JSON value at POS. Returns (values value new-pos)."
-  (setf pos (skip-ws str pos))
-  (when (>= pos (length str))
-    (error "Unexpected end of JSON"))
-  (let ((ch (char str pos)))
-    (cond
-      ((char= ch #\")
-       (parse-json-string str pos))
-      ((char= ch #\{)
-       (parse-json-object str pos))
-      ((char= ch #\[)
-       (parse-json-array str pos))
-      ((char= ch #\t) ; true
-       (values t (+ pos 4)))
-      ((char= ch #\f) ; false
-       (values nil (+ pos 5)))
-      ((char= ch #\n) ; null
-       (values :null (+ pos 4)))
-      ((or (digit-char-p ch) (char= ch #\-))
-       (parse-json-number str pos))
-      (t (error "Unexpected JSON character ~A at ~D" ch pos)))))
-
-(defun parse-json-object (str pos)
-  "Parse a JSON object. Returns (values alist new-pos)."
-  (assert (char= (char str pos) #\{))
-  (incf pos)
-  (setf pos (skip-ws str pos))
-  (let ((result '()))
-    (when (char= (char str pos) #\})
-      (return-from parse-json-object (values result (1+ pos))))
-    (loop
-      (setf pos (skip-ws str pos))
-      (multiple-value-bind (key new-pos) (parse-json-string str pos)
-        (setf pos (skip-ws str new-pos))
-        (assert (char= (char str pos) #\:))
-        (incf pos)
-        (multiple-value-bind (val val-pos) (parse-json-value str pos)
-          (push (cons key val) result)
-          (setf pos (skip-ws str val-pos))
-          (cond
-            ((char= (char str pos) #\})
-             (return (values (nreverse result) (1+ pos))))
-            ((char= (char str pos) #\,)
-             (incf pos))
-            (t (error "Expected , or } in object"))))))))
-
-(defun parse-json-array (str pos)
-  "Parse a JSON array. Returns (values list new-pos)."
-  (assert (char= (char str pos) #\[))
-  (incf pos)
-  (setf pos (skip-ws str pos))
-  (let ((result '()))
-    (when (char= (char str pos) #\])
-      (return-from parse-json-array (values result (1+ pos))))
-    (loop
-      (multiple-value-bind (val new-pos) (parse-json-value str pos)
-        (push val result)
-        (setf pos (skip-ws str new-pos))
-        (cond
-          ((char= (char str pos) #\])
-           (return (values (nreverse result) (1+ pos))))
-          ((char= (char str pos) #\,)
-           (incf pos))
-          (t (error "Expected , or ] in array")))))))
 
 (defun parse-json (str)
-  "Parse a JSON string into Lisp. Objects become alists, arrays become lists."
-  (multiple-value-bind (val _pos) (parse-json-value str 0)
-    (declare (ignore _pos))
-    val))
+  "Parse a JSON string into a hash table using jonathan."
+  (jonathan:parse str :as :hash-table))
 
 (defun json-get (obj key)
-  "Get KEY from a parsed JSON object (alist). KEY is a string."
-  (cdr (assoc key obj :test #'string=)))
+  "Get KEY from a parsed JSON object (hash table). KEY is a string."
+  (when obj (gethash key obj)))
 
-;;; ============================================================
-;;; Minimal JSON serializer
-;;; ============================================================
-
-(defun json-escape-string (s)
-  "Escape a Lisp string for JSON output."
-  (with-output-to-string (out)
-    (loop for ch across s do
-      (case ch
-        (#\" (write-string "\\\"" out))
-        (#\\ (write-string "\\\\" out))
-        (#\Newline (write-string "\\n" out))
-        (#\Return (write-string "\\r" out))
-        (#\Tab (write-string "\\t" out))
-        (#\Backspace (write-string "\\b" out))
-        (t
-         (if (< (char-code ch) 32)
-             (format out "\\u~4,'0X" (char-code ch))
-             (write-char ch out)))))))
-
-(defun serialize-json (value)
-  "Serialize a Lisp value to JSON string.
-   Alists with string keys -> objects, lists -> arrays,
-   strings -> strings, numbers -> numbers, t -> true, nil -> false, :null -> null."
+(defun alist-to-json-value (value)
+  "Recursively convert alist-based response structures for JSON serialization.
+   Alists with string keys become hash tables; lists become arrays."
   (cond
-    ((eq value :null) "null")
-    ((eq value t) "true")
-    ((null value) "false")
-    ((stringp value)
-     (format nil "\"~A\"" (json-escape-string value)))
-    ((integerp value)
-     (format nil "~D" value))
-    ((numberp value)
-     (format nil "~F" value))
+    ((eq value :false) :false)
+    ((eq value :null) :null)
+    ((eq value t) t)
+    ((null value) :null)
+    ((stringp value) value)
+    ((numberp value) value)
     ;; Alist (object) — detect by first element being a cons with string car
     ((and (consp value) (consp (car value)) (stringp (caar value)))
-     (format nil "{~{~A~^,~}}"
-             (mapcar (lambda (pair)
-                       (format nil "\"~A\":~A"
-                               (json-escape-string (car pair))
-                               (serialize-json (cdr pair))))
-                     value)))
+     (let ((ht (make-hash-table :test 'equal)))
+       (dolist (pair value)
+         (setf (gethash (car pair) ht) (alist-to-json-value (cdr pair))))
+       ht))
     ;; List (array)
     ((listp value)
-     (format nil "[~{~A~^,~}]"
-             (mapcar #'serialize-json value)))
-    (t (format nil "\"~A\"" (json-escape-string (format nil "~A" value))))))
+     (mapcar #'alist-to-json-value value))
+    (t value)))
+
+(defun serialize-json (value)
+  "Serialize a Lisp value to a JSON string using jonathan."
+  (jonathan:to-json (alist-to-json-value value)))
 
 ;;; ============================================================
 ;;; Socket client — talk to /tmp/rhema.sock
@@ -287,7 +128,7 @@
   (declare (ignore _params))
   (make-jsonrpc-response id
     `(("protocolVersion" . "2024-11-05")
-      ("capabilities" . (("tools" . (("listChanged" . ,nil)))))
+      ("capabilities" . (("tools" . (("listChanged" . :false)))))
       ("serverInfo" . (("name" . ,*mcp-server-name*)
                        ("version" . ,*mcp-server-version*))))))
 
@@ -340,7 +181,7 @@
   "Dispatch a parsed JSON-RPC message. Returns response or nil for notifications."
   (let ((method (json-get msg "method"))
         (id (json-get msg "id"))
-        (params (or (json-get msg "params") '())))
+        (params (or (json-get msg "params") (make-hash-table))))
     (cond
       ;; Notifications (no id) — don't respond
       ((and (null id) (string= method "notifications/initialized"))
