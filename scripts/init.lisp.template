@@ -1,0 +1,15 @@
+;;;; Rhema init.lisp — auto-generated from scripts/init.lisp.template
+;;;; Do not edit by hand. Run: ~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh generate-init
+
+;;;; Library files (auto-discovered from LIBRARY_DIR)
+{{LIBRARY_LOADS}}
+
+;;;; Quicklisp
+(load "{{HOME}}/quicklisp/setup.lisp")
+
+;;;; Swank — persistent SLIME/SLY server on port 4005
+(ql:quickload :swank :silent t)
+(swank:create-server :port 4005 :dont-close t)
+
+;;;; Socket server — start on init so any session can connect
+(rhema-server:start)
