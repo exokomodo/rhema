@@ -189,6 +189,37 @@ ls -la /home/butler/rhema/library/
 
 ---
 
+## Swank — SLIME/SLY Connection
+
+Swank is embedded in the shared Rhema REPL and starts automatically via `init.lisp`.
+It provides a structured protocol (vs. raw text), full condition/restart introspection,
+stack frames on errors, and lets any SLIME/SLY editor connect to the live image.
+
+**Port:** `localhost:4005` (loopback only)
+
+**Connect from an editor:**
+- Emacs/SLIME: `M-x slime-connect` → `127.0.0.1` → `4005`
+- Emacs/SLY: `M-x sly-connect` → `127.0.0.1` → `4005`
+
+**Check it's running:**
+
+```bash
+ss -tlnp | grep 4005
+```
+
+**If Swank is not loaded** (e.g. after a manual REPL restart):
+
+```bash
+echo '(load "/home/butler/quicklisp/setup.lisp")' | socat - UNIX-CONNECT:/tmp/rhema.sock
+echo '(ql:quickload :swank)' | socat - UNIX-CONNECT:/tmp/rhema.sock
+echo '(swank:create-server :port 4005 :dont-close t)' | socat - UNIX-CONNECT:/tmp/rhema.sock
+```
+
+Both Swank (port 4005) and the Unix socket (`/tmp/rhema.sock`) run on the **same SBCL image** —
+they share all state.
+
+---
+
 ## Bootstrapping Quicklisp (first time only)
 
 ```bash
