@@ -45,6 +45,30 @@ Result comes back pre-delimited — no wrapping needed:
 
 ---
 
+## Fresh Machine Setup
+
+To reproduce a Rhema instance on a new machine:
+
+```bash
+# 1. Clone the repo (for scripts and template)
+git clone https://github.com/exokomodo/rhema ~/github.com/exokomodo/rhema
+
+# 2. Install SBCL 2.6+ and socat
+sudo apt install sbcl socat  # or brew install
+
+# 3. Install Quicklisp
+curl -O https://beta.quicklisp.org/quicklisp.lisp
+sbcl --load quicklisp.lisp --eval '(quicklisp-quickstart:install)' --quit
+
+# 4. Generate init.lisp and start SBCL
+~/github.com/exokomodo/rhema/scripts/sbcl-repl.sh generate-init
+```
+
+Then start SBCL (see below). `~/rhema/` is local state — not git-tracked.
+The template lives in `scripts/init.lisp.template` in the repo.
+
+---
+
 ## Starting the REPL (if socket is down)
 
 Start SBCL with the socket server as a background PTY session:

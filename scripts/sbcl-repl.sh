@@ -21,19 +21,40 @@ ensure_dirs() {
 }
 
 generate_init() {
-    # Regenerate init.lisp to load all library files
+    # Render init.lisp from scripts/init.lisp.template
     ensure_dirs
-    {
-        echo ";;;; Rhema init.lisp — auto-generated, do not edit by hand"
-        echo ";;;; Loads all files in $LIBRARY_DIR"
-        echo ""
-        if [ -d "$LIBRARY_DIR" ]; then
-            for f in "$LIBRARY_DIR"/*.lisp; do
-                [ -f "$f" ] || continue
-                echo "(load \"$f\")"
-            done
-        fi
-    } > "$INIT_FILE"
+    local template
+    template="$(dirname "$0")/init.lisp.template"
+
+    # Build library load lines
+    local library_loads=""
+    if [ -d "$LIBRARY_DIR" ]; then
+        for f in "$LIBRARY_DIR"/*.lisp; do
+            [ -f "$f" ] || continue
+            library_loads="${library_loads}(load \"$f\")
+"
+        done
+    fi
+    # Strip trailing newline
+    library_loads="${library_loads%$'\n'}"
+
+    if [ -f "$template" ]; then
+        # Render template: substitute {{LIBRARY_LOADS}} and {{HOME}}
+        sed \
+            -e "s|{{HOME}}|$HOME|g" \
+            -e "s|{{LIBRARY_LOADS}}|${library_loads}|g" \
+            "$template" > "$INIT_FILE"
+    else
+        # Fallback: inline generation if template missing
+        {
+            echo ";;;; Rhema init.lisp — auto-generated (template not found)"
+            echo "${library_loads}"
+            echo "(load \"$HOME/quicklisp/setup.lisp\")"
+            echo "(ql:quickload :swank :silent t)"
+            echo "(swank:create-server :port 4005 :dont-close t)"
+            echo "(rhema-server:start)"
+        } > "$INIT_FILE"
+    fi
     echo "$INIT_FILE"
 }
 
