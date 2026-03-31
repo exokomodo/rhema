@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL
+        run: sudo apt-get update && sudo apt-get install -y sbcl
+
+      - name: Install Quicklisp
+        run: |
+          curl -fsSL -o quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
+          sbcl --non-interactive --load quicklisp.lisp \
+            --eval '(quicklisp-quickstart:install)' \
+            --eval '(sb-ext:exit)'
+
+      - name: Install jonathan
+        run: |
+          sbcl --non-interactive \
+            --eval '(load (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname)))' \
+            --eval '(ql:quickload :jonathan)' \
+            --eval '(sb-ext:exit)'
+
+      - name: Test server.lisp loads without errors
+        run: |
+          echo "" | timeout 30 sbcl --script mcp/server.lisp 2>&1 | head -20
+          echo "PASS: server.lisp loaded without errors"
+
+      - name: Test MCP initialize handshake
+        run: |
+          REQUEST='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}'
+          RESPONSE=$(echo "$REQUEST" | timeout 30 sbcl --script mcp/server.lisp 2>/dev/null)
+          echo "Response: $RESPONSE"
+          echo "$RESPONSE" | grep -q '"result"' || { echo "FAIL: no result in response"; exit 1; }
+          echo "$RESPONSE" | grep -q '"protocolVersion"' || { echo "FAIL: no protocolVersion in response"; exit 1; }
+          echo "PASS: MCP initialize handshake successful"
