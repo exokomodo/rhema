@@ -62,11 +62,11 @@ jobs:
 
       - name: Eval define and call function
         run: |
-          echo '(defun double (x) (* 2 x))' | socat - UNIX-CONNECT:/tmp/rhema.sock
-          result=$(echo '(double 21)' | socat - UNIX-CONNECT:/tmp/rhema.sock)
+          echo '(defun rhema-double (x) (* 2 x))' | socat - UNIX-CONNECT:/tmp/rhema.sock
+          result=$(echo '(rhema-double 21)' | socat - UNIX-CONNECT:/tmp/rhema.sock)
           echo "Result: $result"
           echo "$result" | grep -q "42" || (echo "ERROR: unexpected result: $result" && exit 1)
-          echo "OK: double(21) = 42"
+          echo "OK: rhema-double(21) = 42"
 
       - name: Verify Swank port is listening
         run: |
