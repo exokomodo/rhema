@@ -48,8 +48,8 @@ generate_init() {
         # Fallback: inline generation if template missing
         {
             echo ";;;; Rhema init.lisp — auto-generated (template not found)"
-            echo "${library_loads}"
             echo "(load \"$HOME/quicklisp/setup.lisp\")"
+            echo "${library_loads}"
             echo "(ql:quickload :swank :silent t)"
             echo "(swank:create-server :port 4005 :dont-close t)"
             echo "(rhema-server:start)"
