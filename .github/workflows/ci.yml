@@ -41,8 +41,7 @@ jobs:
         run: |
           sbcl --noinform --disable-debugger \
             --load ~/rhema/init.lisp \
-            --eval '(sleep 3)' \
-            --eval '(sb-ext:exit)' &
+            --eval '(loop (sleep 3600))' &
           SBCL_PID=$!
           # Wait for socket
           for i in $(seq 1 10); do
