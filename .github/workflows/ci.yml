@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  install:
+    name: Fresh-machine install test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL and socat
+        run: sudo apt-get update && sudo apt-get install -y sbcl socat
+
+      - name: Install Quicklisp
+        run: |
+          curl -sO https://beta.quicklisp.org/quicklisp.lisp
+          sbcl --noinform --non-interactive \
+            --load quicklisp.lisp \
+            --eval '(quicklisp-quickstart:install :path (merge-pathnames "quicklisp/" (user-homedir-pathname)))' \
+            --eval '(sb-ext:exit)'
+
+      - name: Generate init.lisp
+        run: |
+          chmod +x scripts/sbcl-repl.sh
+          scripts/sbcl-repl.sh generate-init
+          echo "=== Generated init.lisp ==="
+          cat ~/rhema/init.lisp
+
+      - name: Verify library was bootstrapped
+        run: |
+          test -f ~/rhema/library/server.lisp || (echo "ERROR: server.lisp not bootstrapped" && exit 1)
+          echo "library files: $(ls ~/rhema/library/)"
+
+      - name: Start SBCL and verify socket comes up
+        run: |
+          sbcl --noinform --disable-debugger \
+            --load ~/rhema/init.lisp \
+            --eval '(sleep 3)' \
+            --eval '(sb-ext:exit)' &
+          SBCL_PID=$!
+          # Wait for socket
+          for i in $(seq 1 10); do
+            if [ -S /tmp/rhema.sock ]; then
+              echo "Socket up after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          test -S /tmp/rhema.sock || (echo "ERROR: socket never appeared" && kill $SBCL_PID && exit 1)
+
+      - name: Eval via socket
+        run: |
+          result=$(echo '(+ 1 2)' | socat - UNIX-CONNECT:/tmp/rhema.sock)
+          echo "Result: $result"
+          echo "$result" | grep -q "3" || (echo "ERROR: unexpected result: $result" && exit 1)
+          echo "OK: eval returned 3"
+
+      - name: Eval define and call function
+        run: |
+          echo '(defun double (x) (* 2 x))' | socat - UNIX-CONNECT:/tmp/rhema.sock
+          result=$(echo '(double 21)' | socat - UNIX-CONNECT:/tmp/rhema.sock)
+          echo "Result: $result"
+          echo "$result" | grep -q "42" || (echo "ERROR: unexpected result: $result" && exit 1)
+          echo "OK: double(21) = 42"
+
+      - name: Verify Swank port is listening
+        run: |
+          # Give Swank a moment
+          sleep 1
+          ss -tlnp | grep 4005 || (echo "ERROR: Swank not listening on 4005" && exit 1)
+          echo "OK: Swank listening on :4005"
