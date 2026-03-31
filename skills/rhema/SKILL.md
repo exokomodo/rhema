@@ -53,7 +53,7 @@ To reproduce a Rhema instance on a new machine:
 # 1. Clone the repo (for scripts and template)
 git clone https://github.com/exokomodo/rhema ~/github.com/exokomodo/rhema
 
-# 2. Install SBCL 2.6+ and socat
+# 2. Install SBCL 2.2+ and socat
 sudo apt install sbcl socat  # or brew install
 
 # 3. Install Quicklisp

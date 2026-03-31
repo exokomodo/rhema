@@ -18,6 +18,18 @@ SBCL_PID_FILE="$RHEMA_DIR/.sbcl-pid"
 
 ensure_dirs() {
     mkdir -p "$RHEMA_DIR" "$LIBRARY_DIR"
+    # Bootstrap library files from repo if not already present
+    local repo_library
+    repo_library="$(dirname "$0")/../library"
+    if [ -d "$repo_library" ]; then
+        for f in "$repo_library"/*.lisp; do
+            [ -f "$f" ] || continue
+            local dest="$LIBRARY_DIR/$(basename "$f")"
+            if [ ! -f "$dest" ]; then
+                cp "$f" "$dest"
+            fi
+        done
+    fi
 }
 
 generate_init() {
